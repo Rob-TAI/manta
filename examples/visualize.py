@@ -72,7 +72,8 @@ def create_visualization(filename="visibility_and_pos.json", sample_rate=30):
         team2_x, team2_y, team2_names, team2_visible = [], [], [], []
         team3_x, team3_y, team3_names, team3_visible = [], [], [], []
 
-        for hero_key, hero_data in heroes.items():
+        # Sort heroes by key to maintain consistent ordering
+        for hero_key, hero_data in sorted(heroes.items()):
             hero_name = hero_key.split('_')
             if len(hero_name) >= 4:
                 hero_name = '_'.join(hero_name[3:-2])  # Extract hero name
@@ -183,7 +184,8 @@ def create_visualization(filename="visibility_and_pos.json", sample_rate=30):
     team2_x, team2_y, team2_names, team2_visible = [], [], [], []
     team3_x, team3_y, team3_names, team3_visible = [], [], [], []
 
-    for hero_key, hero_data in initial_heroes.items():
+    # Sort heroes by key to maintain consistent ordering
+    for hero_key, hero_data in sorted(initial_heroes.items()):
         hero_name = hero_key.split('_')
         if len(hero_name) >= 4:
             hero_name = '_'.join(hero_name[3:-2])
