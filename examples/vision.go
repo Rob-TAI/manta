@@ -25,22 +25,36 @@ type VisionRange struct {
 
 type EntityData struct {
 	Position
-	Team uint64 `json:"m_iTeamNum,omitempty"`
+	Team        uint64
+	VisionRange int32 // Day vision range for calculations
+	ClassName   string
 }
 
 type TickData struct {
-	Team2 map[string]EntityData `json:"team2"`
-	Team3 map[string]EntityData `json:"team3"`
+	Team2 map[string]EntityData
+	Team3 map[string]EntityData
 }
 
-type Output struct {
-	VisionRanges map[string]VisionRange `json:"vision_ranges"`
-	Ticks        map[uint32]TickData    `json:"ticks"`
+type HeroVisibility struct {
+	Visible bool     `json:"visible"`
+	SeenBy  []string `json:"seen_by"`
+}
+
+type TeamVisibility map[string]HeroVisibility
+
+type TickVisibility struct {
+	Time  float64        `json:"time"`  // Game time in seconds
+	Team2 TeamVisibility `json:"team2"`
+	Team3 TeamVisibility `json:"team3"`
+}
+
+type VisibilityOutput struct {
+	Visible map[uint32]TickVisibility `json:"visible"`
 }
 
 func main() {
 	// Command-line flags
-	maxTick := flag.Int("maxtick", 1000, "Maximum tick to parse (0 = unlimited)")
+	maxTick := flag.Int("maxtick", 0, "Maximum tick to parse (0 = unlimited)")
 	flag.Parse()
 
 	// Create a new parser instance from a file
@@ -63,14 +77,21 @@ func main() {
 
 	entityCount := 0
 	lastTick := uint32(0)
+	lastReportedMinute := uint32(0)
+	const ticksPerMinute = uint32(1800) // 30 ticks/sec * 60 sec = 1800 ticks/minute
 
 	p.OnEntity(func(e *manta.Entity, op manta.EntityOp) error {
 		entityCount++
-		if entityCount%10000 == 0 {
-			fmt.Printf("\rProcessed %d entities at tick %d...", entityCount, p.Tick)
-		}
-
 		lastTick = p.Tick
+
+		// Report progress every minute of game time
+		currentMinute := p.Tick / ticksPerMinute
+		if currentMinute > lastReportedMinute {
+			gameTime := float64(p.Tick) / 30.0
+			fmt.Printf("Progress: %d minutes (%.1f seconds) - Processed %d entities, captured %d ticks\n",
+				currentMinute, gameTime, entityCount, len(ticks))
+			lastReportedMinute = currentMinute
+		}
 
 		// Check if we've reached the tick limit
 		if *maxTick > 0 && p.Tick > uint32(*maxTick) {
@@ -94,16 +115,23 @@ func main() {
 		cellZ, _ := e.GetUint64("CBodyComponent.m_cellZ")
 		teamNum, _ := e.GetUint64("m_iTeamNum")
 
-		// Store vision ranges for heroes (static data)
+		// Get vision range for this entity
+		dayVision := int32(0)
 		if isHero {
+			// Store vision ranges for heroes (static data)
 			if _, exists := visionRanges[className]; !exists {
-				dayVision, _ := e.GetInt32("m_iDayTimeVisionRange")
+				dayVision, _ = e.GetInt32("m_iDayTimeVisionRange")
 				nightVision, _ := e.GetInt32("m_iNightTimeVisionRange")
 				visionRanges[className] = VisionRange{
 					Day:   dayVision,
 					Night: nightVision,
 				}
+			} else {
+				dayVision = visionRanges[className].Day
 			}
+		} else if isTower || isFort {
+			// Get vision range for towers/forts
+			dayVision, _ = e.GetInt32("m_iDayTimeVisionRange")
 		}
 
 		// Initialize tick data if needed
@@ -122,7 +150,9 @@ func main() {
 				CellY: cellY,
 				CellZ: cellZ,
 			},
-			Team: teamNum,
+			Team:        teamNum,
+			VisionRange: dayVision,
+			ClassName:   className,
 		}
 
 		// Store in appropriate team bucket
@@ -140,7 +170,9 @@ func main() {
 
 	// Start parsing
 	if *maxTick > 0 {
-		fmt.Printf("Parsing up to tick %d...\n", *maxTick)
+		fmt.Printf("Parsing up to tick %d (%.1f minutes)...\n", *maxTick, float64(*maxTick)/1800.0)
+	} else {
+		fmt.Printf("Parsing entire replay (unlimited)...\n")
 	}
 
 	if err := p.Start(); err != nil {
@@ -150,25 +182,30 @@ func main() {
 		}
 	}
 
-	fmt.Printf("\rProcessed %d entities up to tick %d\n", entityCount, lastTick)
+	finalGameTime := float64(lastTick) / 30.0
+	fmt.Printf("\n✓ Parsing complete: %d entities processed up to tick %d (%.1f minutes / %.1f seconds)\n",
+		entityCount, lastTick, finalGameTime/60.0, finalGameTime)
 
-	// Prepare output
-	output := Output{
-		VisionRanges: visionRanges,
-		Ticks:        ticks,
-	}
+	// Calculate visibility for each tick
+	fmt.Printf("Calculating visibility for %d ticks...\n", len(ticks))
+	visibility := calculateVisibility(ticks)
 
-	// Write JSON output
-	jsonFile, err := os.Create("vision.json")
+	// Write visibility JSON output
+	visFile, err := os.Create("visibility.json")
 	if err != nil {
-		log.Fatalf("unable to create JSON output file: %s", err)
+		log.Fatalf("unable to create visibility JSON file: %s", err)
 	}
-	defer jsonFile.Close()
+	defer visFile.Close()
 
-	encoder := json.NewEncoder(jsonFile)
+	encoder := json.NewEncoder(visFile)
 	encoder.SetIndent("", "  ")
+
+	output := VisibilityOutput{
+		Visible: visibility,
+	}
+
 	if err := encoder.Encode(output); err != nil {
-		log.Fatalf("unable to encode JSON: %s", err)
+		log.Fatalf("unable to encode visibility JSON: %s", err)
 	}
 
 	// Write human-readable summary
@@ -221,8 +258,114 @@ func main() {
 		fmt.Fprintf(summaryFile, "  Team 3 entities: %d\n", len(tickData.Team3))
 	}
 
-	fmt.Fprintf(summaryFile, "\n\nFull data available in vision.json\n")
+	// Visibility summary
+	fmt.Fprintf(summaryFile, "\n\nVISIBILITY ANALYSIS\n")
+	fmt.Fprintf(summaryFile, "-------------------\n")
 
-	log.Printf("Output written to vision.json and vision.txt")
-	log.Printf("Captured %d hero vision ranges and %d ticks of data\n", len(visionRanges), len(ticks))
+	visibleCount := 0
+	totalHeroChecks := 0
+	for _, tickVis := range visibility {
+		for _, heroVis := range tickVis.Team2 {
+			totalHeroChecks++
+			if heroVis.Visible {
+				visibleCount++
+			}
+		}
+		for _, heroVis := range tickVis.Team3 {
+			totalHeroChecks++
+			if heroVis.Visible {
+				visibleCount++
+			}
+		}
+	}
+
+	if totalHeroChecks > 0 {
+		visiblePct := float64(visibleCount) / float64(totalHeroChecks) * 100
+		fmt.Fprintf(summaryFile, "Total hero visibility checks: %d\n", totalHeroChecks)
+		fmt.Fprintf(summaryFile, "Heroes visible: %d (%.1f%%)\n", visibleCount, visiblePct)
+		fmt.Fprintf(summaryFile, "Heroes not visible: %d (%.1f%%)\n", totalHeroChecks-visibleCount, 100-visiblePct)
+	}
+
+	fmt.Fprintf(summaryFile, "\n\nFull visibility data available in visibility.json\n")
+
+	log.Printf("Output written to visibility.json and vision.txt")
+	log.Printf("Captured %d hero vision ranges, %d ticks, analyzed %d hero positions\n",
+		len(visionRanges), len(ticks), totalHeroChecks)
+}
+
+// calculateVisibility computes which heroes are visible to the opposing team each tick
+func calculateVisibility(ticks map[uint32]TickData) map[uint32]TickVisibility {
+	visibility := make(map[uint32]TickVisibility)
+
+	for tick, tickData := range ticks {
+		tickVis := TickVisibility{
+			Time:  float64(tick) / 30.0, // Convert tick to seconds
+			Team2: make(TeamVisibility),
+			Team3: make(TeamVisibility),
+		}
+
+		// Check Team 2 heroes against Team 3 entities
+		for heroKey, hero := range tickData.Team2 {
+			if !strings.HasPrefix(hero.ClassName, "CDOTA_Unit_Hero_") || hero.Team != 2 {
+				continue
+			}
+
+			seenBy := []string{}
+			for entityKey, entity := range tickData.Team3 {
+				// Only check entities from opposing team with vision range
+				if entity.Team != 3 || entity.VisionRange <= 0 {
+					continue
+				}
+				if isVisible(hero, entity) {
+					seenBy = append(seenBy, entityKey)
+				}
+			}
+
+			tickVis.Team2[heroKey] = HeroVisibility{
+				Visible: len(seenBy) > 0,
+				SeenBy:  seenBy,
+			}
+		}
+
+		// Check Team 3 heroes against Team 2 entities
+		for heroKey, hero := range tickData.Team3 {
+			if !strings.HasPrefix(hero.ClassName, "CDOTA_Unit_Hero_") || hero.Team != 3 {
+				continue
+			}
+
+			seenBy := []string{}
+			for entityKey, entity := range tickData.Team2 {
+				// Only check entities from opposing team with vision range
+				if entity.Team != 2 || entity.VisionRange <= 0 {
+					continue
+				}
+				if isVisible(hero, entity) {
+					seenBy = append(seenBy, entityKey)
+				}
+			}
+
+			tickVis.Team3[heroKey] = HeroVisibility{
+				Visible: len(seenBy) > 0,
+				SeenBy:  seenBy,
+			}
+		}
+
+		visibility[tick] = tickVis
+	}
+
+	return visibility
+}
+
+// isVisible checks if a hero is within the vision range of an entity
+func isVisible(hero EntityData, observer EntityData) bool {
+	// Calculate 2D distance (ignoring Z for simplicity, cells are in map coordinates)
+	dx := float64(hero.CellX) - float64(observer.CellX)
+	dy := float64(hero.CellY) - float64(observer.CellY)
+
+	// Using squared distance to avoid sqrt for performance
+	distSquared := dx*dx + dy*dy
+	visionRange := float64(observer.VisionRange)
+	visionRangeSquared := visionRange * visionRange
+
+	return distSquared <= visionRangeSquared
 }
