@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(move \"C:\\Users\\rob_f8dpel4\\Documents\\GitHub\\manta\\example.go\" \"C:\\Users\\rob_f8dpel4\\Documents\\GitHub\\manta\\examples\\example.go\")",
+      "Bash(copy:*)",
+      "Bash(go mod init:*)",
+      "Bash(go mod edit:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(go run:*)",
+      "Bash(cat:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

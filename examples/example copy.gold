@@ -1,0 +1,116 @@
+package main
+
+import (
+	"log"
+	"os"
+
+	"github.com/dotabuff/manta"
+)
+
+func main() {
+	// Specify which class to inspect (change this to inspect different classes)
+	targetClass := "CDOTAFogOfWarTempViewers"
+
+	// Create a new parser instance from a file. Alternatively see NewParser([]byte)
+	f, err := os.Open("replay.dem")
+	if err != nil {
+		log.Fatalf("unable to open file: %s", err)
+	}
+	defer f.Close()
+
+	p, err := manta.NewStreamParser(f)
+	if err != nil {
+		log.Fatalf("unable to create parser: %s", err)
+	}
+
+	// Get basic player info from the demo file header
+	// p.Callbacks.OnCDemoFileInfo(func(m *dota.CDemoFileInfo) error {
+	// 	log.Println("\n=== PLAYER INFORMATION ===")
+
+	// 	if gameInfo := m.GetGameInfo(); gameInfo != nil {
+	// 		if dotaInfo := gameInfo.GetDota(); dotaInfo != nil {
+	// 			players := dotaInfo.GetPlayerInfo()
+	// 			log.Printf("Found %d players:\n", len(players))
+
+	// 			for i, player := range players {
+	// 				log.Printf("Player %d:", i)
+	// 				log.Printf("  Name: %s", player.GetPlayerName())
+	// 				log.Printf("  Hero: %s", player.GetHeroName())
+	// 				log.Printf("  SteamID: %d", player.GetSteamid())
+	// 				log.Printf("  Team: %d", player.GetGameTeam())
+	// 				log.Printf("  Is Bot: %v\n", player.GetIsFakeClient())
+	// 			}
+	// 		}
+	// 	}
+	// 	return nil
+	// })
+
+	// Track player resource entity for detailed stats
+	// p.OnEntity(func(e *manta.Entity, op manta.EntityOp) error {
+	// 	// CDOTA_PlayerResource contains all player stats
+	// 	if e.GetClassName() == "CDOTA_PlayerResource" {
+	// 		// Only print periodically to avoid spam
+	// 		if p.Tick%500 == 0 {
+	// 			log.Printf("\n=== PLAYER STATS at tick %d ===", p.Tick)
+
+	// 			// Loop through all 10 players (0-9)
+	// 			for i := 0; i < 10; i++ {
+	// 				// Get player name (format changed between game versions)
+	// 				var playerName string
+	// 				if name, ok := e.Get(fmt.Sprintf("m_vecPlayerData.%04d.m_iszPlayerName", i)).(string); ok {
+	// 					playerName = name
+	// 				} else if name, ok := e.Get(fmt.Sprintf("m_iszPlayerNames.%04d", i)).(string); ok {
+	// 					playerName = name
+	// 				}
+
+	// 				// Get kills, deaths, assists
+	// 				kills, _ := e.GetInt32(fmt.Sprintf("m_iKills.%04d", i))
+	// 				deaths, _ := e.GetInt32(fmt.Sprintf("m_iDeaths.%04d", i))
+	// 				assists, _ := e.GetInt32(fmt.Sprintf("m_iAssists.%04d", i))
+
+	// 				if playerName != "" {
+	// 					log.Printf("Player %d (%s): K/D/A = %d/%d/%d", i, playerName, kills, deaths, assists)
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// 	return nil
+	// })
+
+	// Track if we've already printed the target class
+	hasShownTarget := false
+
+	p.OnEntity(func(e *manta.Entity, op manta.EntityOp) error {
+		className := e.GetClassName()
+
+		// If this is the target class and we haven't shown it yet
+		if className == targetClass && !hasShownTarget {
+			hasShownTarget = true
+			log.Printf("\n=== %s (Tick: %d, Op: %v) ===\n", className, p.Tick, op)
+
+			// Get all fields from the entity
+			allFields := e.Map()
+
+			if len(allFields) == 0 {
+				log.Println("  (No fields)")
+			} else {
+				// Print each field and its value
+				for key, value := range allFields {
+					log.Printf("  %s = %v (type: %T)", key, value, value)
+				}
+			}
+			log.Println()
+		}
+
+		return nil
+	})
+
+	// Start parsing the replay!
+	p.Start()
+
+	log.Printf("\nParse Complete!\n")
+
+	if !hasShownTarget {
+		log.Printf("Warning: Class '%s' was not found in the replay\n", targetClass)
+	}
+}
