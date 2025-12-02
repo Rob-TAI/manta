@@ -18,18 +18,26 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/dotabuff/manta"
+	"github.com/dotabuff/manta/dota"
 )
 
 type Position struct {
-	CellX int32   `json:"m_cellX"`
-	CellY int32   `json:"m_cellY"`
-	CellZ int32   `json:"m_cellZ"`
-	VecX  float32 `json:"m_vecX"`
-	VecY  float32 `json:"m_vecY"`
-	VecZ  float32 `json:"m_vecZ"`
+	CellX int32
+	CellY int32
+	CellZ int32
+	VecX  float32
+	VecY  float32
+	VecZ  float32
+}
+
+type WorldPosition struct {
+	PosX float64 `json:"pos_x"`
+	PosY float64 `json:"pos_y"`
+	PosZ float64 `json:"pos_z"`
 }
 
 type EntityData struct {
@@ -37,6 +45,11 @@ type EntityData struct {
 	Team        uint64
 	VisionRange int32
 	ClassName   string
+	PlayerID    int32 // Stable player ID for heroes (-1 for non-heroes)
+	// Precomputed world coordinates for performance
+	WorldX float64
+	WorldY float64
+	WorldZ float64
 }
 
 type TempViewerData struct {
@@ -44,14 +57,23 @@ type TempViewerData struct {
 	GridY  int32
 	Radius int32
 	Team   uint64
+	// Precomputed world coordinates for performance
+	WorldX float64
+	WorldY float64
 }
 
 type HeroData struct {
-	Position
+	WorldPosition
 	Team    uint64   `json:"team"`
 	Time    float64  `json:"time"`
 	Visible bool     `json:"visible"`
 	SeenBy  []string `json:"seen_by"`
+}
+
+type UnitData struct {
+	WorldPosition
+	Team uint64 `json:"team"`
+	Type string `json:"type"` // "tower", "creep", "fort"
 }
 
 type TickData struct {
@@ -63,6 +85,7 @@ type TickData struct {
 type TickOutput struct {
 	Time   float64             `json:"time"`
 	Heroes map[string]HeroData `json:"heroes"`
+	Units  map[string]UnitData `json:"units"`
 }
 
 type CombinedOutput struct {
@@ -88,6 +111,14 @@ func main() {
 
 	// Track vision ranges (static data from first occurrence)
 	visionRanges := make(map[string]int32)
+
+	// Track min/max positions for debugging
+	minX := float64(999999)
+	maxX := float64(-999999)
+	minY := float64(999999)
+	maxY := float64(-999999)
+	minZ := float64(999999)
+	maxZ := float64(-999999)
 
 	// Rolling world state - maintains last-known position of all entities
 	state := TickData{
@@ -115,6 +146,7 @@ func main() {
 		tickOut := TickOutput{
 			Time:   float64(tick) / 30.0,
 			Heroes: make(map[string]HeroData),
+			Units:  make(map[string]UnitData),
 		}
 
 		// Process Team 2 heroes
@@ -123,7 +155,7 @@ func main() {
 				continue
 			}
 
-			seenBy := []string{}
+			seenBy := make([]string, 0, 8) // Preallocate with small capacity
 			seenByCreep := false
 			seenByTower := false
 			seenByFort := false
@@ -160,26 +192,33 @@ func main() {
 				}
 			}
 
-			// Add consolidated entries
+			// Add consolidated entries (normalized labels)
 			if seenByCreep {
 				seenBy = append(seenBy, "creep")
 			}
 			if seenByTower {
-				seenBy = append(seenBy, "Tower")
+				seenBy = append(seenBy, "tower")
 			}
 			if seenByFort {
-				seenBy = append(seenBy, "Fort")
+				seenBy = append(seenBy, "fort")
 			}
 			if seenByTempViewer {
-				seenBy = append(seenBy, "TempViewer")
+				seenBy = append(seenBy, "temp_viewer")
 			}
 
+			// Sort for stable output
+			sort.Strings(seenBy)
+
 			tickOut.Heroes[heroKey] = HeroData{
-				Position: hero.Position,
-				Team:     hero.Team,
-				Time:     float64(tick) / 30.0,
-				Visible:  len(seenBy) > 0,
-				SeenBy:   seenBy,
+				WorldPosition: WorldPosition{
+					PosX: hero.WorldX,
+					PosY: hero.WorldY,
+					PosZ: hero.WorldZ,
+				},
+				Team:    hero.Team,
+				Time:    float64(tick) / 30.0,
+				Visible: len(seenBy) > 0,
+				SeenBy:  seenBy,
 			}
 		}
 
@@ -189,7 +228,7 @@ func main() {
 				continue
 			}
 
-			seenBy := []string{}
+			seenBy := make([]string, 0, 8) // Preallocate with small capacity
 			seenByCreep := false
 			seenByTower := false
 			seenByFort := false
@@ -226,36 +265,41 @@ func main() {
 				}
 			}
 
-			// Add consolidated entries
+			// Add consolidated entries (normalized labels)
 			if seenByCreep {
 				seenBy = append(seenBy, "creep")
 			}
 			if seenByTower {
-				seenBy = append(seenBy, "Tower")
+				seenBy = append(seenBy, "tower")
 			}
 			if seenByFort {
-				seenBy = append(seenBy, "Fort")
+				seenBy = append(seenBy, "fort")
 			}
 			if seenByTempViewer {
-				seenBy = append(seenBy, "TempViewer")
+				seenBy = append(seenBy, "temp_viewer")
 			}
 
+			// Sort for stable output
+			sort.Strings(seenBy)
+
 			tickOut.Heroes[heroKey] = HeroData{
-				Position: hero.Position,
-				Team:     hero.Team,
-				Time:     float64(tick) / 30.0,
-				Visible:  len(seenBy) > 0,
-				SeenBy:   seenBy,
+				WorldPosition: WorldPosition{
+					PosX: hero.WorldX,
+					PosY: hero.WorldY,
+					PosZ: hero.WorldZ,
+				},
+				Team:    hero.Team,
+				Time:    float64(tick) / 30.0,
+				Visible: len(seenBy) > 0,
+				SeenBy:  seenBy,
 			}
 		}
 
 		output.Ticks[tick] = tickOut
 	}
 
-	p.OnEntity(func(e *manta.Entity, op manta.EntityOp) error {
-		entityCount++
-		lastTick = p.Tick
-
+	// Register tick callback to flush on every tick (ensures no ticks are skipped)
+	p.Callbacks.OnCNETMsg_Tick(func(m *dota.CNETMsg_Tick) error {
 		// Initialize current tick tracking
 		if !haveTick {
 			currentTick = p.Tick
@@ -268,6 +312,18 @@ func main() {
 			currentTick = p.Tick
 		}
 
+		// Check if we've reached the tick limit
+		if *maxTick > 0 && p.Tick > uint32(*maxTick) {
+			return fmt.Errorf("reached max tick %d", *maxTick)
+		}
+
+		return nil
+	})
+
+	p.OnEntity(func(e *manta.Entity, op manta.EntityOp) error {
+		entityCount++
+		lastTick = p.Tick
+
 		// Report progress every minute of game time
 		currentMinute := p.Tick / ticksPerMinute
 		if currentMinute > lastReportedMinute {
@@ -275,11 +331,6 @@ func main() {
 			fmt.Printf("Progress: %d minutes (%.1f seconds) - Processed %d entities, captured %d ticks\n",
 				currentMinute, gameTime, entityCount, len(output.Ticks))
 			lastReportedMinute = currentMinute
-		}
-
-		// Check if we've reached the tick limit
-		if *maxTick > 0 && p.Tick > uint32(*maxTick) {
-			return fmt.Errorf("reached max tick %d", *maxTick)
 		}
 
 		className := e.GetClassName()
@@ -295,11 +346,29 @@ func main() {
 			return nil
 		}
 
-		// Create unique entity key using both index and serial (prevents key collisions on entity recycling)
-		entityKey := fmt.Sprintf("%s_%d_%d", className, e.GetIndex(), e.GetSerial())
+		// Create unique entity key
+		// For heroes, try to use player ID for stable identity
+		var entityKey string
+		if isHero {
+			if playerID, ok := e.GetInt32("m_iPlayerID"); ok && playerID >= 0 {
+				// Use player ID for stable hero identity (e.g., "CDOTA_Unit_Hero_Abaddon_player_0")
+				entityKey = fmt.Sprintf("%s_player_%d", className, playerID)
+			} else {
+				// Fallback to index/serial for heroes without player ID
+				entityKey = fmt.Sprintf("%s_%d_%d", className, e.GetIndex(), e.GetSerial())
+			}
+		} else {
+			// Non-heroes use index/serial (prevents key collisions on entity recycling)
+			entityKey = fmt.Sprintf("%s_%d_%d", className, e.GetIndex(), e.GetSerial())
+		}
 
 		// Handle entity deletion/removal
 		if op.Flag(manta.EntityOpDeleted) || op.Flag(manta.EntityOpLeft) {
+			// Clear temp viewers if they're deleted
+			if isTempViewer {
+				state.TempViewers = state.TempViewers[:0]
+				return nil
+			}
 			delete(state.Team2, entityKey)
 			delete(state.Team3, entityKey)
 			return nil
@@ -309,6 +378,8 @@ func main() {
 		if isTempViewer {
 			// Replace temp viewers array (don't append indefinitely)
 			state.TempViewers = state.TempViewers[:0]
+
+			const cellSize float64 = 128.0 // Dota 2 cell size (250 units per cell)
 
 			if teamNum, ok := e.GetUint64("m_iTeamNum"); ok {
 				// Check up to 64 viewers (10 was too low)
@@ -323,11 +394,17 @@ func main() {
 					gridY, _ := e.GetInt32(prefix + ".m_nGridY")
 					radius, _ := e.GetInt32(prefix + ".m_nRadius")
 
+					// Precompute world coordinates (grid coordinates need scaling)
+					worldX := float64(gridX) * cellSize
+					worldY := float64(gridY) * cellSize
+
 					state.TempViewers = append(state.TempViewers, TempViewerData{
 						GridX:  gridX,
 						GridY:  gridY,
 						Radius: radius,
 						Team:   teamNum,
+						WorldX: worldX,
+						WorldY: worldY,
 					})
 				}
 			}
@@ -351,8 +428,10 @@ func main() {
 
 		teamNum, _ := e.GetUint64("m_iTeamNum")
 
-		// Get vision range for this entity
+		// Get vision range and player ID for this entity
 		dayVision := int32(0)
+		playerID := int32(-1) // Default to -1 for non-heroes
+
 		if isHero {
 			// Store vision ranges for heroes (static data)
 			if _, exists := visionRanges[className]; !exists {
@@ -361,9 +440,37 @@ func main() {
 			} else {
 				dayVision = visionRanges[className]
 			}
+			// Extract player ID for stable hero identity
+			playerID, _ = e.GetInt32("m_iPlayerID")
 		} else if isTower || isFort || isCreep {
 			// Get vision range for towers/forts/creeps
 			dayVision, _ = e.GetInt32("m_iDayTimeVisionRange")
+		}
+
+		// Precompute world coordinates for performance
+		const cellSize float64 = 128.0 // Dota 2 cell size (128 units per cell)
+		worldX := float64(cellX)*cellSize + float64(vecX)
+		worldY := float64(cellY)*cellSize + float64(vecY)
+		worldZ := float64(cellZ)*cellSize + float64(vecZ)
+
+		// Track min/max for debugging
+		if worldX < minX {
+			minX = worldX
+		}
+		if worldX > maxX {
+			maxX = worldX
+		}
+		if worldY < minY {
+			minY = worldY
+		}
+		if worldY > maxY {
+			maxY = worldY
+		}
+		if worldZ < minZ {
+			minZ = worldZ
+		}
+		if worldZ > maxZ {
+			maxZ = worldZ
 		}
 
 		entityData := EntityData{
@@ -378,6 +485,10 @@ func main() {
 			Team:        teamNum,
 			VisionRange: dayVision,
 			ClassName:   className,
+			PlayerID:    playerID,
+			WorldX:      worldX,
+			WorldY:      worldY,
+			WorldZ:      worldZ,
 		}
 
 		// Update rolling world state
@@ -449,22 +560,17 @@ func main() {
 	fmt.Printf("  - Total hero snapshots: %d\n", totalHeroes)
 	fmt.Printf("  - Heroes visible: %d (%.1f%%)\n", totalVisible, float64(totalVisible)/float64(totalHeroes)*100)
 	fmt.Printf("  - Heroes invisible: %d (%.1f%%)\n", totalInvisible, float64(totalInvisible)/float64(totalHeroes)*100)
+	fmt.Printf("\nPosition ranges:\n")
+	fmt.Printf("  - X: %.2f to %.2f (range: %.2f)\n", minX, maxX, maxX-minX)
+	fmt.Printf("  - Y: %.2f to %.2f (range: %.2f)\n", minY, maxY, maxY-minY)
+	fmt.Printf("  - Z: %.2f to %.2f (range: %.2f)\n", minZ, maxZ, maxZ-minZ)
 }
 
 // isVisible checks if a hero is within the vision range of an entity
 func isVisible(hero EntityData, observer EntityData) bool {
-	const cellSize float64 = 250.0 // Dota 2 cell size (250 units per cell)
-
-	// Calculate true world position: position = cell * 250 + vec
-	heroX := float64(hero.CellX)*cellSize + float64(hero.VecX)
-	heroY := float64(hero.CellY)*cellSize + float64(hero.VecY)
-
-	observerX := float64(observer.CellX)*cellSize + float64(observer.VecX)
-	observerY := float64(observer.CellY)*cellSize + float64(observer.VecY)
-
-	// Calculate distance
-	dx := heroX - observerX
-	dy := heroY - observerY
+	// Use precomputed world coordinates
+	dx := hero.WorldX - observer.WorldX
+	dy := hero.WorldY - observer.WorldY
 
 	// Using squared distance to avoid sqrt for performance
 	distSquared := dx*dx + dy*dy
@@ -476,22 +582,13 @@ func isVisible(hero EntityData, observer EntityData) bool {
 
 // isVisibleToTempViewer checks if a hero is within the vision range of a temp viewer (ward)
 func isVisibleToTempViewer(hero EntityData, viewer TempViewerData) bool {
-	const cellSize float64 = 250.0 // Dota 2 cell size (250 units per cell)
-
-	// Calculate hero's world position
-	heroX := float64(hero.CellX)*cellSize + float64(hero.VecX)
-	heroY := float64(hero.CellY)*cellSize + float64(hero.VecY)
-
-	// Temp viewers use grid coordinates directly (gridX/gridY are in world units already)
-	viewerX := float64(viewer.GridX) * cellSize
-	viewerY := float64(viewer.GridY) * cellSize
-
-	// Calculate distance
-	dx := heroX - viewerX
-	dy := heroY - viewerY
+	// Use precomputed world coordinates
+	dx := hero.WorldX - viewer.WorldX
+	dy := hero.WorldY - viewer.WorldY
 
 	// Using squared distance to avoid sqrt for performance
 	distSquared := dx*dx + dy*dy
+	// Radius is already in world units (no scaling needed)
 	visionRange := float64(viewer.Radius)
 	visionRangeSquared := visionRange * visionRange
 
